@@ -28,11 +28,13 @@ def t_full_rank_mapping(X, W):
     After the loop, dim = (dk, n * m, q)
     """
     # Option 1: W is a batch of tensors:
-    return np.concatenate([t_product(W[i], X) for i in range(W.shape[0])], axis=1)
+    # return np.concatenate([t_product(W[i], X) for i in range(W.shape[0])], axis=1)
     # Option2: W is a single tensor:
-    return t_product(W, X)
-    # Option 3: W is a list of matrices: !!Warning: This is not what was explain just before!!
-    return np.stack([np.dot(W[i], X[:, j, :]) for j in range(X.shape[1]) for i in range(W.shape[0])], axis=1)
+    # return t_product(W, X)
+    # Option 3: W is a list of matrices:
+    return np.concatenate([np.transpose(
+        t_product(W[j, :, :].reshape((W.shape[1], W.shape[2], 1)), X[:, i, :].reshape((X.shape[0], X.shape[2], 1))),
+        (0, 2, 1)) for i in range(X.shape[1]) for j in range(W.shape[0])], axis=1)
 
 
 def re_orthonormalization(X):
@@ -44,12 +46,12 @@ def re_orthonormalization(X):
     # paper
 
 
-def t_re_orthonormalization(X):
+def t_re_orthonormalization(X, mode="reduced"):
     """
     :param X: tensor of dimension (d, n, q)
     :return: a tensor Q of dimension (d, d, q) where X = t_product(Q, R)
     """
-    Q, R = t_qr(X)  # TODO: Implement t_qr() in the toolbox
+    Q, R = t_qr(X, mode=mode)
     return Q
 
 
@@ -84,7 +86,9 @@ def t_projection_pooling(X, pool_size=4):
     :param pool_size: int, number of slices to pool together: partial mean is computed on pool_size number of slices
     :return: a tensor of dimension (d, n / pool_size, q)
     """
-    return
+    n, t = X.shape[1] % pool_size, X.shape[1] // pool_size
+    return np.hstack([np.mean(np.stack(np.split(X[:, :-n, :], t, axis=1), axis=1), axis=2),
+                      np.mean(X[:, -n:, :], axis=1).reshape((X.shape[0], 1, X.shape[2]))])
 
 
 def orthonormal_mapping(X, l):
@@ -95,5 +99,15 @@ def orthonormal_mapping(X, l):
     """
     return
 
-def t_orthonormal_mapping(X, l):
 
+def t_orthonormal_mapping(X, l):
+    """
+    :param X: a tensor of dimension (d, n, q)
+    :param l: number of eigen-matrix to keep.
+    :return: U the tensor of the l biggest eigen-matrices of dimension
+    """
+    rank = tubal_rank(X)
+    if l > rank:
+        l = rank  # TODO: This should be corrected. If we ask l eigen-matrices, this should return l eigen-matrices. Not less. But the complete SVD is very time-consuming.
+    U, S, V = t_svd(X)
+    return U[:, :l, :]
