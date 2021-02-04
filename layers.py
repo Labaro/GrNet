@@ -1,4 +1,6 @@
 from tlinalg import *
+import tensorflow as tf
+from tensorflow.keras import layers
 
 
 def full_rank_mapping(X, W):
@@ -111,3 +113,50 @@ def t_orthonormal_mapping(X, l):
         l = rank  # TODO: This should be corrected. If we ask l eigen-matrices, this should return l eigen-matrices. Not less. But the complete SVD is very time-consuming.
     U, S, V = t_svd(X)
     return U[:, :l, :]
+
+
+class FRMap(layers.Layer):
+    def __init__(self, filter=16, input_dim=32, output_dim=16, **kwargs):
+        super(FRMap, self).__init__(**kwargs)
+        w_init = tf.random_normal_initializer()
+        self.W = tf.Variable(
+            initial_value=w_init(shape=(filter, input_dim, output_dim), dtype="float32"),
+            trainable=True,
+        )
+
+    def call(self, inputs, **kwargs):
+        return t_full_rank_mapping(inputs, self.W)
+
+
+class ReOrth(layers.Layer):
+    def __init__(self, **kwargs):
+        super(ReOrth, self).__init__(**kwargs)
+
+    def call(self, inputs, **kwargs):
+        return t_re_orthonormalization(inputs)
+
+
+class ProjMap(layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def call(self, inputs, **kwargs):
+        return t_projection_mapping(inputs)
+
+
+class ProjPooling(layers.Layer):
+    def __init__(self, pool_size=4, **kwargs):
+        super().__init__(**kwargs)
+        self.pool_size = pool_size
+
+    def call(self, inputs, **kwargs):
+        return t_projection_pooling(inputs, self.pool_size)
+
+
+class OrthMap(layers.Layer):
+    def __init__(self, nb_eigen, **kwargs):
+        super().__init__(**kwargs)
+        self.nb_eigen = nb_eigen
+
+    def call(self, inputs, **kwargs):
+        return t_orthonormal_mapping(inputs, self.nb_eigen)
