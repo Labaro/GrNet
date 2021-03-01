@@ -12,31 +12,15 @@ def full_rank_mapping(X, W):
     return np.dot(W, X).transpose((0, 2, 1, 3)).reshape((X.shape[0] * W.shape[0], W.shape[1], X.shape[2]))
 
 
+@tf.function
 def t_full_rank_mapping(X, W):
     """
-    :param X: batch data of dimension (d, n, q) where n is the size of the batch
-    :param W: batch filters of dimension:
-     Option 1 : (m, dk, d, q), (dk, d, q) is the dimension of tensor filter. And we have m filters in total
-     Option 2 : (dk, d, q), a single tensor but the second dimension has to be the same as the first dimension of X
-     Option 3 : (m, dk, d), a list of matrices. Each filter is applied on each slice of the tensor X
-    :return:
-     Option 1 : (dk, n * m, q) after concatenating every results of dimension (dk, n, q) m times
-     Option 2 : (dk, n, q)
-     Option 3 : (dk, n * m, q) -> retenue en faisant:
-     for i in 0:n, for j in 0:m, repeat:
-     X[:, i, :] -> dim = (d, 1, q) -> reshape dim = (d, q, 1)
-     W[j, :, :] -> dim = (1, dk, d) -> reshape dim = (dk, d, 1)
-      => t_product(W[j, :, :], X[:,i,:]), dim = (dk, q, 1) -> reshape (dk, 1, q)
-    After the loop, dim = (dk, n * m, q)
+    :param X: batch data of dimension (n, d0, q) where n is the size of the batch
+    :param W: batch filters of dimension (m, d1, d0), a list of matrices. Each filter is applied on each slice of the
+     tensor X
+    :return: tensors batch of dimension (n, d1, m, q) after concatenating every results of dimension (d1, q) m times
     """
-    # Option 1: W is a batch of tensors:
-    # return np.concatenate([t_product(W[i], X) for i in range(W.shape[0])], axis=1)
-    # Option2: W is a single tensor:
-    # return t_product(W, X)
-    # Option 3: W is a list of matrices:
-    return np.concatenate([np.transpose(
-        t_product(W[j, :, :].reshape((W.shape[1], W.shape[2], 1)), X[:, i, :].reshape((X.shape[0], X.shape[2], 1))),
-        (0, 2, 1)) for i in range(X.shape[1]) for j in range(W.shape[0])], axis=1)
+    return np.stack([np.stack([np.dot(w, x) for w in W], axis=1) for x in X])
 
 
 def re_orthonormalization(X):
@@ -48,13 +32,16 @@ def re_orthonormalization(X):
     # paper
 
 
-def t_re_orthonormalization(X, mode="reduced"):
+@tf.function
+def t_re_orthonormalization(X, mode="econ", l=None):
     """
-    :param X: tensor of dimension (d, n, q)
-    :return: a tensor Q of dimension (d, d, q) where X = t_product(Q, R)
+    :param X: tensors batch of dimension (n, d1, m, q)
+    :return: tensors batch U of dimension (n, d1, m, d1)
     """
-    Q, R = t_qr(X, mode=mode)
-    return Q
+    if l is not None:
+        return np.stack([t_svd(x, opt=mode)[0][:, :l, :] for x in X])
+    else:
+        return np.stack([t_svd(x, opt=mode)[0] for x in X])
 
 
 def projection_mapping(X):
@@ -67,10 +54,10 @@ def projection_mapping(X):
 
 def t_projection_mapping(X):
     """
-    :param X: a tensor of dimension (d, n, q)
-    :return: a tensor of dimension (d, d, q) ???? Should have (d, n, d)?
+    :param X: tensors batch of dimension (n, d1, m, d1)
+    :return: tensors batch of dimension (n, d1,
     """
-    return t_product(X, t_transpose(X))
+    return np.stack([t_product(x, t_transpose(x)) for x in X])
 
 
 def projection_pooling(X, pool_size=4):
@@ -82,15 +69,24 @@ def projection_pooling(X, pool_size=4):
     return
 
 
-def t_projection_pooling(X, pool_size=4):
+def t_projection_pooling(X, pool_size=2):
     """
-    :param X: a tensor of dimension (d, n, q)
+    :param X: a tensor of dimension (n, d1, d1, q)
     :param pool_size: int, number of slices to pool together: partial mean is computed on pool_size number of slices
     :return: a tensor of dimension (d, n / pool_size, q)
     """
-    n, t = X.shape[1] % pool_size, X.shape[1] // pool_size
-    return np.hstack([np.mean(np.stack(np.split(X[:, :-n, :], t, axis=1), axis=1), axis=2),
-                      np.mean(X[:, -n:, :], axis=1).reshape((X.shape[0], 1, X.shape[2]))])
+    split_idx = np.arange(pool_size, X.shape[3], pool_size)
+    sub_array_list = np.split(X, split_idx, axis=-1)
+    if X.shape[3] % pool_size == 0:
+        split_array = np.stack(sub_array_list, axis=-2)
+        mean_tensor = np.mean(split_array, axis=-1)
+    else:
+        partial_array_1 = np.stack(sub_array_list[:-1], axis=-2)
+        partial_array_2 = np.stack(sub_array_list[-1:], axis=-2)
+        partial_mean_1 = np.mean(partial_array_1, axis=-1)
+        partial_mean_2 = np.mean(partial_array_2, axis=-1)
+        mean_tensor = np.concatenate([partial_mean_1, partial_mean_2], axis=-1)
+    return mean_tensor
 
 
 def orthonormal_mapping(X, l):
@@ -116,16 +112,20 @@ def t_orthonormal_mapping(X, l):
 
 
 class FRMap(layers.Layer):
-    def __init__(self, filter=16, input_dim=32, output_dim=16, **kwargs):
+    def __init__(self, filter, output_dim, **kwargs):
         super(FRMap, self).__init__(**kwargs)
-        w_init = tf.random_normal_initializer()
-        self.W = tf.Variable(
-            initial_value=w_init(shape=(filter, input_dim, output_dim), dtype="float32"),
+        self.filter = filter
+        self.output_dim = output_dim
+
+    def build(self, input_shape):
+        self.W = self.add_weight(
+            shape=(self.filter, self.output_dim, input_shape[1]),
+            initializer="random_normal",
             trainable=True,
         )
 
     def call(self, inputs, **kwargs):
-        return t_full_rank_mapping(inputs, self.W)
+        return tf.transpose(tf.tensordot(self.W, inputs, [[-1], [1]]), (2, 1, 0, 3))
 
 
 class ReOrth(layers.Layer):
@@ -133,7 +133,12 @@ class ReOrth(layers.Layer):
         super(ReOrth, self).__init__(**kwargs)
 
     def call(self, inputs, **kwargs):
-        return t_re_orthonormalization(inputs)
+        inputs = tf.cast(inputs, tf.complex64)
+        fft_inputs = tf.signal.fft(inputs)
+        fft_inputs_t = tf.transpose(fft_inputs, (0, 3, 1, 2))
+        S, U, V = tf.linalg.svd(fft_inputs_t)
+        outputs = tf.signal.ifft(tf.transpose(U, (0, 2, 3, 1)))
+        return tf.math.real(outputs)
 
 
 class ProjMap(layers.Layer):
@@ -141,7 +146,11 @@ class ProjMap(layers.Layer):
         super().__init__(**kwargs)
 
     def call(self, inputs, **kwargs):
-        return t_projection_mapping(inputs)
+        inputs = tf.cast(inputs, tf.complex64)
+        fft_inputs = tf.transpose(tf.signal.fft(inputs), (0, 3, 1, 2))
+        fft_inputs_t = tf.transpose(fft_inputs, (0, 1, 3, 2))
+        fft_outputs = tf.matmul(fft_inputs, fft_inputs_t)
+        return tf.math.real(tf.transpose(fft_outputs, (0, 2, 3, 1)))
 
 
 class ProjPooling(layers.Layer):
@@ -150,7 +159,12 @@ class ProjPooling(layers.Layer):
         self.pool_size = pool_size
 
     def call(self, inputs, **kwargs):
-        return t_projection_pooling(inputs, self.pool_size)
+        # Try tf.layers.Permute((2,3))
+        # with tf.device("/cpu:0"):
+        inputs_t = tf.transpose(inputs, (0, 1, 3, 2))
+        outputs_t = tf.nn.max_pool(inputs_t, ksize=[1, 1, 2, 1], strides=[1, 1, 2, 1], padding="SAME", data_format="NHWC")
+        #return outputs_t
+        return tf.transpose(outputs_t, (0, 1, 3, 2))
 
 
 class OrthMap(layers.Layer):
@@ -159,4 +173,9 @@ class OrthMap(layers.Layer):
         self.nb_eigen = nb_eigen
 
     def call(self, inputs, **kwargs):
-        return t_orthonormal_mapping(inputs, self.nb_eigen)
+        inputs = tf.cast(inputs, tf.complex64)
+        fft_inputs = tf.signal.fft(inputs)
+        fft_inputs_t = tf.transpose(fft_inputs, (0, 3, 1, 2))
+        S, U, V = tf.linalg.svd(fft_inputs_t)
+        outputs = tf.signal.ifft(tf.transpose(U[:, :, :, :self.nb_eigen], (0, 2, 3, 1)))
+        return tf.math.real(outputs)
