@@ -32,7 +32,7 @@ def t_full_rank_mapping(inputs, weights):
         projected_grad = euc_grad - tf.matmul(tf.matmul(euc_grad, weights, transpose_b=True), weights)
         return None, projected_grad
 
-    outputs = tf.tensordot(weights, inputs, [[3], [1]])
+    outputs = tf.tensordot(weights, inputs, [[-1], [1]])
     return outputs, grad
 
 @tf.function
