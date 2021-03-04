@@ -3,12 +3,14 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 from layers import FRMap, ReOrth, ProjMap, ProjPooling, OrthMap
 import tensorflow as tf
 import numpy as np
-from tensorflow.keras.layers import InputLayer, Dense, Flatten, MaxPooling2D
+from tensorflow.keras.layers import InputLayer, Dense, Flatten, AveragePooling2D
 from tensorflow.keras.datasets import mnist
 from tensorflow.keras.losses import SparseCategoricalCrossentropy
 from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 
+#physical_devices = tf.config.list_physical_devices('GPU')
+#tf.config.experimental.set_memory_growth(physical_devices[0], True)
 (X_train, y_train), (X_test, y_test) = mnist.load_data()
 
 new_X = []
@@ -36,11 +38,11 @@ input_dim = (28, 28)  # Middle dimension is the number of sample in one tensor.
 
 model = tf.keras.Sequential([
     InputLayer(input_shape=input_dim),
-    FRMap(output_dim=26, filter=64),
+    FRMap(output_dim=25, filter=1),
     ReOrth(),
     ProjMap(),
     ProjPooling(),
-    OrthMap(nb_eigen=20),
+    #OrthMap(nb_eigen=20),
     ProjMap(),
     Flatten(),
     Dense(10)
@@ -49,7 +51,7 @@ model = tf.keras.Sequential([
 print(model.summary())
 
 model.compile(optimizer=Adam(5e-3), loss=SparseCategoricalCrossentropy(from_logits=True), metrics=["accuracy"])
-model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=1, batch_size=batch_size)
+model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=10, batch_size=batch_size)
 
 print(model.trainable_weights)
 W = model.trainable_weights[0]
